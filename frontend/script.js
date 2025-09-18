@@ -1,6 +1,7 @@
 // Verifica se já há uma sessão ativa ao carregar a página
 window.addEventListener("DOMContentLoaded", async () => {
   try {
+    // Verifica sessão
     const resposta = await fetch("http://localhost:3000/verificar", {
       method: "GET",
       credentials: "include"
@@ -11,8 +12,16 @@ window.addEventListener("DOMContentLoaded", async () => {
     } else {
       mostrarTelaLogin();
     }
+
+    // Verifica feature flag
+    const configRes = await fetch("http://localhost:3000/config");
+    const config = await configRes.json();
+    if (config.feature_criar_usuarios_random) {
+      document.getElementById("botaoCriarUsuarios").style.display = "block";
+    }
+
   } catch (err) {
-    console.error("Erro ao verificar sessão:", err);
+    console.error("Erro ao verificar sessão ou config:", err);
   }
 });
 
@@ -58,6 +67,22 @@ document.getElementById("logoutBtn").addEventListener("click", async function ()
     }
   } catch (erro) {
     console.error("Erro ao fazer logout:", erro);
+  }
+});
+
+document.getElementById("criarUsuariosBtn").addEventListener("click", async function () {
+  try {
+    const resposta = await fetch("http://localhost:3000/criar-usuarios-random", {
+      method: "POST"
+    });
+
+    if (resposta.ok) {
+      alert("Usuários aleatórios criados com sucesso!");
+    } else {
+      alert("Erro ao criar usuários.");
+    }
+  } catch (erro) {
+    console.error("Erro ao criar usuários:", erro);
   }
 });
 

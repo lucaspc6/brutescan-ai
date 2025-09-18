@@ -4,9 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const cors = require("cors");
 const session = require("express-session");
-const { getUserByEmail } = require("./database");
+const { getUserByEmail, db } = require("./database");
 const { parse } = require("json2csv");
 const { exec } = require("child_process");
+const config = require("./config.json");
 
 const app = express();
 const PORT = 3000;
@@ -21,7 +22,6 @@ function formatarTimestampLocal() {
   const minuto = String(spNow.getMinutes()).padStart(2, "0");
   return `${ano}-${mes}-${dia} ${hora}:${minuto}`;
 }
-
 
 function logSistema(msg) {
   const agora = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
@@ -66,7 +66,7 @@ function verificarEstruturaLogs() {
   if (!fs.existsSync(centralizadoDir)) fs.mkdirSync(centralizadoDir);
 }
 
-function formatarTimestampLocal() {
+function formatarTimestampLocalCSV() {
   const agora = new Date();
   return agora.toISOString().slice(0, 16).replace("T", " ");
 }
@@ -79,7 +79,7 @@ function registrarLogCSV(req, email, sucesso, motivo) {
   ip = ip.replace('::ffff:', '').trim();
   if (ip === '::1') ip = '127.0.0.1';
 
-  const timestamp = formatarTimestampLocal();
+  const timestamp = formatarTimestampLocalCSV();
   const motivoSanitizado = removerAcentos(motivo || "");
 
   const logEntry = {
@@ -172,6 +172,41 @@ app.get("/verificar", (req, res) => {
     return res.status(401).json({ mensagem: "Não autenticado." });
   }
   return res.status(200).json({ mensagem: `Você está logado como ${email}.` });
+});
+
+// Rota para retornar config.json
+app.get("/config", (req, res) => {
+  res.json(config);
+});
+
+// Rota para criar usuários aleatórios
+app.post("/criar-usuarios-random", async (req, res) => {
+  if (!config.feature_criar_usuarios_random) {
+    return res.status(403).json({ mensagem: "Feature desativada." });
+  }
+
+  const usuarios = [];
+  for (let i = 0; i < 10; i++) {
+    const email = `user${Math.floor(Math.random() * 10000)}@teste.com`;
+    const senha = `senha${Math.floor(Math.random() * 10000)}`;
+    usuarios.push({ email, senha });
+  }
+
+  let inseridos = 0;
+
+  const promises = usuarios.map(({ email, senha }) => {
+    return new Promise((resolve) => {
+      db.run("INSERT OR IGNORE INTO usuarios (email, senha) VALUES (?, ?)", [email, senha], function (err) {
+        if (!err && this.changes > 0) inseridos++;
+        resolve();
+      });
+    });
+  });
+
+  await Promise.all(promises);
+
+  logSistema(`Criados ${inseridos} usuários aleatórios.`);
+  res.status(200).json({ mensagem: `${inseridos} usuários criados.` });
 });
 
 app.listen(PORT, () => {
