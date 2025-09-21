@@ -6,57 +6,24 @@ const cors = require("cors");
 const session = require("express-session");
 const { getUserByEmail, db } = require("./database");
 const { parse } = require("json2csv");
-const { exec } = require("child_process");
+const { exec, execFile } = require("child_process");
 const config = require("./config.json");
 
 const app = express();
 const PORT = 3000;
 
-function formatarTimestampLocal() {
-  const utcNow = new Date();
-  const spNow = new Date(utcNow.getTime() - 3 * 60 * 60 * 1000); // UTC-3
-  const ano = spNow.getFullYear();
-  const mes = String(spNow.getMonth() + 1).padStart(2, "0");
-  const dia = String(spNow.getDate()).padStart(2, "0");
-  const hora = String(spNow.getHours()).padStart(2, "0");
-  const minuto = String(spNow.getMinutes()).padStart(2, "0");
-  return `${ano}-${mes}-${dia} ${hora}:${minuto}`;
-}
-
+// Logger de console sempre em America/Sao_Paulo
 function logSistema(msg) {
   const agora = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
   console.log(`[${agora}] [SISTEMA] ${msg}`);
 }
 
+// Remoção de acentos para campo CSV "motivo_do_erro"
 function removerAcentos(str) {
-  return str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  return (str || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
 }
 
-app.use(express.static(path.join(__dirname, "../frontend")));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
-
-app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin || origin.startsWith("http://localhost")) {
-      callback(null, true);
-    } else {
-      callback(new Error("CORS bloqueado para essa origem: " + origin));
-    }
-  },
-  credentials: true
-}));
-
-app.set('trust proxy', true);
-
-app.use(session({
-  secret: 'segredo-super-seguro',
-  resave: false,
-  saveUninitialized: false,
-  cookie: { secure: false }
-}));
-
-const sessoesAtivas = {};
+// Caminhos de logs
 const logsDir = path.join(__dirname, "logs");
 const centralizadoDir = path.join(logsDir, "centralizado");
 const centralLogPath = path.join(centralizadoDir, "log_geral.csv");
@@ -66,18 +33,35 @@ function verificarEstruturaLogs() {
   if (!fs.existsSync(centralizadoDir)) fs.mkdirSync(centralizadoDir);
 }
 
+// >>> CORREÇÃO: timestamp no fuso America/Sao_Paulo com segundos (YYYY-MM-DD HH:mm:ss)
 function formatarTimestampLocalCSV() {
-  const agora = new Date();
-  return agora.toISOString().slice(0, 16).replace("T", " ");
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false
+  }).formatToParts(new Date());
+
+  const map = {};
+  for (const p of parts) map[p.type] = p.value;
+  return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
 }
 
 function registrarLogCSV(req, email, sucesso, motivo) {
   verificarEstruturaLogs();
 
-  let ip = req.headers['x-forwarded-for'] || req.socket?.remoteAddress || 'IP_DESCONHECIDO';
-  if (ip.includes(',')) ip = ip.split(',')[0];
-  ip = ip.replace('::ffff:', '').trim();
-  if (ip === '::1') ip = '127.0.0.1';
+  let ip =
+    req.headers["x-forwarded-for"] ||
+    req.socket?.remoteAddress ||
+    "IP_DESCONHECIDO";
+
+  if (ip.includes(",")) ip = ip.split(",")[0];
+  ip = ip.replace("::ffff:", "").trim();
+  if (ip === "::1") ip = "127.0.0.1";
 
   const timestamp = formatarTimestampLocalCSV();
   const motivoSanitizado = removerAcentos(motivo || "");
@@ -92,8 +76,12 @@ function registrarLogCSV(req, email, sucesso, motivo) {
 
   const csv = parse([logEntry], { header: !fs.existsSync(centralLogPath) });
   fs.appendFileSync(centralLogPath, csv + "\n");
-  logSistema(`Tentativa registrada: ${email} | Sucesso: ${logEntry.success} | IP: ${ip} | Motivo: ${motivoSanitizado || "N/A"}`);
 
+  logSistema(
+    `Tentativa registrada: ${email} | Sucesso: ${logEntry.success} | IP: ${ip} | Motivo: ${motivoSanitizado || "N/A"}`
+  );
+
+  // Mantido conforme seu código atual (se desejar, depois otimizamos para 1 watcher único)
   exec("node logManager.js", (error, stdout, stderr) => {
     if (error) logSistema(`Erro ao executar logManager.js: ${error.message}`);
     if (stderr) logSistema(`stderr: ${stderr}`);
@@ -101,9 +89,40 @@ function registrarLogCSV(req, email, sucesso, motivo) {
   });
 }
 
+// --- Middleware e rotas ---
+
+app.use(express.static(path.join(__dirname, "../frontend")));
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin || origin.startsWith("http://localhost")) {
+        callback(null, true);
+      } else {
+        callback(new Error("CORS bloqueado para essa origem: " + origin));
+      }
+    },
+    credentials: true
+  })
+);
+
+app.set("trust proxy", true);
+
+app.use(
+  session({
+    secret: "segredo-super-seguro",
+    resave: false,
+    saveUninitialized: false,
+    cookie: { secure: false }
+  })
+);
+
+const sessoesAtivas = {};
+
 app.post("/login", async (req, res) => {
   const { email, senha } = req.body || {};
-
   if (!email || !senha) {
     logSistema("Tentativa de login com corpo ausente ou incompleto.");
     registrarLogCSV(req, email || "desconhecido", false, "Email ou senha ausente");
@@ -112,7 +131,6 @@ app.post("/login", async (req, res) => {
 
   try {
     const usuario = await getUserByEmail(email);
-
     if (!usuario || usuario.senha !== senha) {
       logSistema(`Tentativa de login com credenciais inválidas: ${email}`);
       registrarLogCSV(req, email, false, "Credenciais invalidas");
@@ -148,14 +166,11 @@ app.post("/logout", (req, res) => {
     logSistema("Sessão não disponível para logout.");
     return res.status(500).json({ mensagem: "Sessão não disponível." });
   }
-
   const email = req.session?.email;
-
   if (email && sessoesAtivas[email] === req.sessionID) {
     delete sessoesAtivas[email];
   }
-
-  req.session.destroy(err => {
+  req.session.destroy((err) => {
     if (err) {
       logSistema("Erro ao encerrar a sessão.");
       return res.status(500).json({ mensagem: "Erro ao encerrar a sessão." });
@@ -174,45 +189,55 @@ app.get("/verificar", (req, res) => {
   return res.status(200).json({ mensagem: `Você está logado como ${email}.` });
 });
 
-// Rota para retornar config.json
 app.get("/config", (req, res) => {
   res.json(config);
 });
 
-// Rota para criar usuários aleatórios
 app.post("/criar-usuarios-random", async (req, res) => {
   if (!config.feature_criar_usuarios_random) {
     return res.status(403).json({ mensagem: "Feature desativada." });
   }
-
   const usuarios = [];
   for (let i = 0; i < 10; i++) {
     const email = `user${Math.floor(Math.random() * 10000)}@teste.com`;
     const senha = `senha${Math.floor(Math.random() * 10000)}`;
     usuarios.push({ email, senha });
   }
-
   let inseridos = 0;
-
   const promises = usuarios.map(({ email, senha }) => {
     return new Promise((resolve) => {
-      db.run("INSERT OR IGNORE INTO usuarios (email, senha) VALUES (?, ?)", [email, senha], function (err) {
-        if (!err && this.changes > 0) inseridos++;
-        resolve();
-      });
+      db.run(
+        "INSERT OR IGNORE INTO usuarios (email, senha) VALUES (?, ?)",
+        [email, senha],
+        function (err) {
+          if (!err && this.changes > 0) inseridos++;
+          resolve();
+        }
+      );
     });
   });
-
   await Promise.all(promises);
-
   logSistema(`Criados ${inseridos} usuários aleatórios.`);
   res.status(200).json({ mensagem: `${inseridos} usuários criados.` });
+});
+
+app.post("/simular-logins", (req, res) => {
+  if (!config.feature_simulador_login) {
+    return res.status(403).json({ mensagem: "Feature desativada." });
+  }
+  execFile("node", ["simulador.js"], { cwd: __dirname }, (error) => {
+    if (error) {
+      logSistema(`Erro ao executar simulador: ${error.message}`);
+      return res.status(500).json({ mensagem: "Erro ao executar simulador." });
+    }
+    logSistema("Simulador de login executado.");
+    res.status(200).json({ mensagem: "Simulação concluída." });
+  });
 });
 
 app.listen(PORT, () => {
   logSistema(`Servidor rodando em http://localhost:${PORT}`);
   verificarEstruturaLogs();
-
   if (fs.existsSync(centralLogPath)) {
     logSistema("Arquivo log_geral.csv encontrado. Executando logManager.js...");
     exec("node logManager.js", (error, stdout, stderr) => {

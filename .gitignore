@@ -1,0 +1,11 @@
+# Ignorar dependências
+node_modules/
+
+# Ignorar logs gerados
+backend/logs/
+
+# Ignorar banco de dados local
+backend/database/banco.db
+
+# Ignorar arquivos de log
+backend/*.log
